@@ -1,6 +1,5 @@
 #Wave3
 A state library for Google Wave gadgets
-
 ##namespace wave3
 
 ###static methods
@@ -15,6 +14,8 @@ A state library for Google Wave gadgets
 - buffer(callback:function(), context?:object)
 
 ###class StateItem
+represents an observer of a single state key
+
 ####constructor
 - wave3.StateItem(key:string, onUpdate?:function(value:string), onDelete?:function(), context?:object)
 ####methods
