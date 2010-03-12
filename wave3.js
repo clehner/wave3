@@ -1,6 +1,6 @@
 /*
  * Wave3
- * A higher-level state API for Google Wave Gadgets.
+ * A state library for Google Wave gadgets
  * 
  * Copyright (c) 2009 Charles Lehner
  * 
@@ -24,242 +24,216 @@
  *
  */
 
-if (!wave || !gadgets) {
-	throw new Error("Wave Gadget API is not available");
-}
-
-wave3 = (function () {
-	var waveState, gadgetLoaded, stateUpdated, participantsUpdated,
-		updateObjectState, removeObject, Stateful, onLoad, waveStateValues,
-		waveStateKeys, sendObjectUpdate, wave3, participantCallback,
-		
-		participantsLoaded = false,
-		stateWaiting = false,
-		delta = {},
-		constructors = {},
-		stateObjects = {},
-		stateObjectStates = {},
-		waveStateKeys = [],
-		pendingOutgoingUpdates = {};
+wave3 = new function () {
+	var wave3 = this;
 	
-	gadgetLoaded = function () {
-		waveState = wave.getState();
-		if (!waveState) {
-			throw new Error("No state");
-		}
-		wave.setStateCallback(stateUpdated);
-		wave.setParticipantCallback(participantsUpdated);
-		if (typeof onLoad == "function") {
-			onLoad();
-		}
-	};
-	
-	stateUpdated = function () {
-		var keys, i, key, value;
-
-		if (!participantsLoaded) {
-			// wait until participants are loaded
-			stateWaiting = true;
-			return false;
-		}
-		
-		keys = waveState.getKeys();
-		waveStateValues = {};
-		
-		// Update stuff
-		for (i = 0; (key = keys[i]); i++) {
-			value = waveState.get(key);
-			if (typeof value == "string") {
-				waveStateValues[key] = value;
-				
-				updateObjectState(key, value);
+	function Publisher() {
+		var listeners = [];
+		function publisher() {
+			for (var i = 0, l = listeners.length; i < l; i++) {
+				var listener = listeners[i];
+				listener[0].apply(listener[1] || this, arguments);
 			}
 		}
-		
-		// Check for deleted keys
-		for (i = waveStateKeys.length; i--;) {
-			key = waveStateKeys[i];
-			if (!(key in waveStateValues)) {
-				removeObject(key);
-			}
-		}
-		
-		waveStateKeys = keys;
-	};
-	
-	participantsUpdated = function (participants) {
-		if (!participantsLoaded) {
-			participantsLoaded = true;
-			wave3.viewer = wave.getViewer();
-			if (stateWaiting) {
-				stateWaiting = false;
-				stateUpdated();
-			}
-			wave3.setParticipantCallback = wave.setParticipantCallback;
-			if (participantCallback) {
-				wave.setParticipantCallback.apply(wave, participantCallback);
-			}
-		}
-	};
-	
-	// Deal with an incoming state change for a state object
-	updateObjectState = function (key, value) {
-		var state, oldState, proto, constructor, object, subkey,
-		delta = {};
-		
-		state = JSON.parse(value, function reviver(key, value) {
-			var id, stateObject;
-			if (typeof value == "object") {
-				if ("_id" in value) {
-					id = value._id;
-					stateObject = stateObjects[id];
-					if (stateObject) {
-						return stateObject;
-					} else {
-						// do it later
-					}
-				} else if ("_pid" in value) {
-					id = value._pid;
-					return wave.getParticipantById(id);
-				}
-			}
-			return value;
-		});
-		
-		object = stateObjects[key];
-		if (!object) {
-			// First update. Instantiate the object
-			proto = state._proto;
-			if ((typeof proto == "string") && (proto in constructors)) {
-				constructor = constructors[proto];
-			} else {
-				constructor = constructors[""] || Stateful;
-			}
-			object = stateObjects[key] = new constructor();
-			object.id = key;
-			oldState = {};
-		
-		} else {
-			// Find removed keys
-			oldState = stateObjectStates[key] || {};
-			for (subkey in oldState) {
-				if (!(subkey in state)) {
-					delta[subkey] = undefined;
-				}
-			}
-		}
-		
-		// Find changed keys
-		for (subkey in state) {
-			if (state[subkey] != oldState[subkey]) {
-				delta[subkey] = state[subkey];
-			}
-		}
-		
-		stateObjectStates[key] = state;
-		
-		if ("_value" in state) {
-			// non-object, single-value state
-			delta = state = state._value;
-		}
-		
-		object.update(delta, state);
-	};
-	
-	removeObject = function (key) {
-		var object = stateObjects[key];
-		if (object) {
-			object.remove();
-			delete stateObjects[key];
-			delete stateObjectStates[key];
-		}
-	};
-	
-	Stateful = function () {};
-	Stateful.prototype = {
-		id: "0",
-		constructor: Stateful,
-		update: function (changes) {},
-		remove: function () {},
-		submitDelta: function (delta) {
-			var id, oldDelta, k;
-			id = this.id;
-			oldDelta = pendingOutgoingUpdates[id];
-			if (oldDelta && (typeof delta == "object")) {
-				for (k in delta) {
-					oldDelta[k] = delta[k];
-				}
-			} else {
-				pendingOutgoingUpdates[id] = delta;
-			}
-			if (!stateObjects[id]) {
-				stateObjects[id] = this;
-			}
-		},
-		toJSON: function () {
-			return {_id: this.id};
-		}
-	};
-	
-	wave.Participant.prototype.toJSON = function () {
-		return {_pid: this.id_};
+		publisher.subscribe = function (fn, scope) {
+			listeners[listeners.length] = [fn, scope];
+			return this;
+		};
+		return publisher;
 	}
 	
-	wave3 = {
-		Stateful: Stateful,
-		
-		// set an onload handler
-		onLoad: function (handler) {
-			onLoad = handler;
-		},
-		
-		sendUpdates: function () {
-			var key, k, object, oldState, newState, changes;
-			
-			for (key in pendingOutgoingUpdates) {
-				object = stateObjects[key];
-				oldState = stateObjectStates[key];
-				changes = pendingOutgoingUpdates[key];
-				if (typeof changes == "object") {
-					newState = {};
-					if (oldState) {
-						for (k in oldState) {
-							newState[k] = oldState[k];
-						}
-					} else {
-						newState._proto = object._protoName;
-					}
-					for (k in changes) {
-						newState[k] = changes[k];
-					}
-				} else {
-					// non-object state
-					newState = {
-						_proto: object._protoName,
-						_value: changes
-					};
-				}
-				delta[key] = JSON.stringify(newState);
-				// pre-emptive updating. might be a bad idea.
-				//object.update(changes);
+
+	var waveState,
+	    state = {}, 
+	    participants = {},
+	    buffer = {},
+	    stateItems = {},
+	    buffering = false,
+	    stateLoaded = false,
+	    participantsLoaded = false,
+	    onNewKey = new Publisher(),
+	    onParticipantUpdate = new Publisher(),
+	    onLoad = new Publisher();
+
+	function StateItem(key, onUpdate, onDelete, context) {
+		// If a state item already exists for this key, add the callbacks to
+		// it and return it instead of this.
+		var stateItem = stateItems[key];
+		if (stateItem) {
+			if (stateItem != this) {
+				arguments.callee.call(stateItem, arguments);
+				return stateItem;
 			}
-			waveState.submitDelta(delta);
-			delta = {};
-		},
+		} else {
+			stateItems[key] = this;
+			this.key = key;
+		}
 		
-		addTypes: function (types) {
-			for (var name in types) {
-				constructors[name] = types[name];
-				types[name].prototype._protoName = name;
+		this.onUpdate = new Publisher()
+			.subscribe(onUpdate, context);
+		this.onDelete = new Publisher()
+			.subscribe(onDelete, context);
+		
+		var value = state[key];
+		if (value) {
+			this.onUpdate(value);
+		} else if (value === null) {
+			this.onDelete(value);
+		}
+	}
+	StateItem.prototype = {
+		key: "",
+		constructor: StateItem,
+		onUpdate: /*Publisher*/ null,
+		onDelete: /*Publisher*/ null,
+		setValue: function (value) {
+			if (buffering) {
+				buffer[this.key] = value;
+			} else {
+				waveState.submitValue(this.key, value);
 			}
 		},
-		
-		setParticipantCallback: function (a, b) {
-			participantCallback = arguments;
+		detatch: function () {
+			delete stateItems[key];
 		}
 	};
 	
-	gadgets.util.registerOnLoadHandler(gadgetLoaded);
+	function updateState(delta, a) {
+		for (var key in delta) {
+			var value = delta[key];
+			if (state[key] !== value) {
+				if (a) state[key] = value;
+				if (!(key in stateItems)) {
+					// new key
+					onNewKey(key);
+				}
+				
+				var stateItem = stateItems[key];
+				if (stateItem) {
+					if (value === null) {
+						// delete key
+						stateItem.onDelete();
+						if (a) delete state[key];
+					} else {
+						// update key
+						stateItem.onUpdate(value);
+					}
+				}
+			}
+		}
+	}
 	
-	return wave3;
-})();
+	// called by wave
+	function onStateChanged() {
+		waveState = wave.state_;
+		var newState = waveState.state_;
+		
+		if (!stateLoaded) {
+			stateLoaded = true;
+			if (participantsLoaded) {
+				onLoad();
+			}
+		}
+		
+		// Check for deleted keys.
+		for (var key in state) {
+			if (!(key in newState)) {
+				var stateItem = stateItems[key];
+				if (stateItem) {
+					stateItem.onDelete();
+					delete state[key];
+				}
+			}
+		}
+		
+		// Check for changed values.
+		updateState(newState, true);
+	}
+	
+	// called by wave
+	function onParticipantChanged() {
+		var newParticipants, id, newParticipant, oldParticipant, prop;
+		
+		if (!participantsLoaded) {
+			participantsLoaded = true;
+			if (stateLoaded) {
+				onLoad();
+			}
+		}
+		
+		// This is a hack.
+		newParticipants = wave.participantMap_;
+		
+		participantsSearch: for (id in newParticipants) {
+			newParticipant = newParticipants[id];
+			oldParticipant = participants[id];
+			
+			// check if the participant is new
+			if (!oldParticipant) {
+				onParticipantUpdate(newParticipant);
+				continue participantsSearch;
+			}
+			// check for changed properties of the participant
+			for (prop in newParticipant) {
+				if (newParticipant[prop] != oldParticipant[prop]) {
+					onParticipantUpdate(newParticipant);
+					continue participantsSearch;
+				}
+			}
+		}
+		
+		participants = newParticipants;
+	}
+	
+	// called by gadget container
+	function main() {
+		if (window.wave && wave.isInWaveContainer()) {
+			wave.setParticipantCallback(onParticipantChanged);
+			wave.setStateCallback(onStateChanged);
+		}
+	}
+	gadgets.util.registerOnLoadHandler(main);
+	
+	this.StateItem = StateItem;
+	this._Publisher = Publisher;
+	
+	this.addLoadCallback = function (cb, context) {
+		onLoad.subscribe(cb, context);
+		if (stateLoaded && participantsLoaded) {
+			cb.call(context);
+		}
+	};
+	
+	this.addParticipantUpdateCallback = onParticipantUpdate.subscribe;
+	
+	this.addNewKeyCallback = onNewKey.subscribe;
+	
+	this.startBuffer = function () {
+		buffering = true;
+	};
+	
+	this.endBuffer = function () {
+		wave3.flushBuffer();
+		buffering = false;
+	};
+	
+	this.flushBuffer = function () {
+		waveState.submitDelta(buffer);
+		buffer = {};
+	};
+	
+	// render the buffer locally, without sending it
+	this.applyBuffer = function () {
+		updateState(buffer, true);
+	};
+	
+	this.buffer = function (fn, context) {
+		var nestedBuffering = buffering;
+		buffering = true;
+		fn.call(context);
+		if (!nestedBuffering) {
+			wave3.flushBuffer();
+		}
+		buffering = nestedBuffering;
+	};
+};
